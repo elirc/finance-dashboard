@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Eli & Elyn Household Finance Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js" defer></script>
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Dashboard navigation">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">EE</div>
+          <div>
+            <p class="brand-kicker">Household</p>
+            <h1>Eli & Elyn</h1>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <a href="#overview" class="nav-link active"><i data-lucide="layout-dashboard"></i><span>Overview</span></a>
+          <a href="#expenses" class="nav-link"><i data-lucide="receipt-text"></i><span>Expenses</span></a>
+          <a href="#bills" class="nav-link"><i data-lucide="calendar-check"></i><span>Bills</span></a>
+          <a href="#goals" class="nav-link"><i data-lucide="target"></i><span>Goals</span></a>
+          <a href="#investments" class="nav-link"><i data-lucide="trending-up"></i><span>Investing</span></a>
+        </nav>
+
+        <div class="sidebar-summary">
+          <span>Monthly savings pace</span>
+          <strong id="sidebarSavingsRate">0%</strong>
+          <div class="meter">
+            <span id="sidebarSavingsMeter"></span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Family finance command center</p>
+            <h2>Track spending, bills, savings, and investment goals.</h2>
+          </div>
+          <div class="toolbar">
+            <label class="field compact">
+              <span>Month</span>
+              <input id="monthPicker" type="month" />
+            </label>
+            <label class="field compact">
+              <span>View</span>
+              <select id="ownerFilter">
+                <option value="All">Eli + Elyn</option>
+                <option value="Eli">Eli</option>
+                <option value="Elyn">Elyn</option>
+                <option value="Household">Household</option>
+              </select>
+            </label>
+            <button class="icon-button" id="resetDataButton" type="button" title="Reset demo data" aria-label="Reset demo data">
+              <i data-lucide="rotate-ccw"></i>
+            </button>
+            <button class="primary-button" id="openAddModal" type="button">
+              <i data-lucide="plus"></i>
+              Add entry
+            </button>
+          </div>
+        </header>
+
+        <section id="overview" class="section">
+          <div class="kpi-grid">
+            <article class="kpi">
+              <div class="kpi-icon income"><i data-lucide="wallet"></i></div>
+              <span>Monthly income</span>
+              <strong id="incomeKpi">$0</strong>
+              <small id="incomeNote">After tax income</small>
+            </article>
+            <article class="kpi">
+              <div class="kpi-icon expense"><i data-lucide="credit-card"></i></div>
+              <span>Monthly spending</span>
+              <strong id="expenseKpi">$0</strong>
+              <small id="expenseNote">Expenses plus paid bills</small>
+            </article>
+            <article class="kpi">
+              <div class="kpi-icon bills"><i data-lucide="bell-ring"></i></div>
+              <span>Upcoming bills</span>
+              <strong id="billsKpi">$0</strong>
+              <small id="billsNote">Open bills this month</small>
+            </article>
+            <article class="kpi">
+              <div class="kpi-icon net"><i data-lucide="piggy-bank"></i></div>
+              <span>Net worth</span>
+              <strong id="netWorthKpi">$0</strong>
+              <small id="netWorthNote">Savings and investments</small>
+            </article>
+          </div>
+
+          <div class="main-grid">
+            <section class="panel wide" aria-labelledby="cashflowTitle">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Cash flow</p>
+                  <h3 id="cashflowTitle">Income vs. spending</h3>
+                </div>
+                <span class="status-pill" id="cashflowStatus">Balanced</span>
+              </div>
+              <div class="chart-wrap tall">
+                <canvas id="cashflowChart" aria-label="Income and spending chart"></canvas>
+              </div>
+            </section>
+
+            <section class="panel" aria-labelledby="breakdownTitle">
+              <div class="panel-header">
+                <div>
+                  <p class="eyebrow">Categories</p>
+                  <h3 id="breakdownTitle">Expense breakdown</h3>
+                </div>
+              </div>
+              <div class="chart-wrap">
+                <canvas id="categoryChart" aria-label="Expense category chart"></canvas>
+              </div>
+              <div class="legend-list" id="categoryLegend"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="expenses" class="section split-layout">
+          <section class="panel" aria-labelledby="budgetTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Budget guardrails</p>
+                <h3 id="budgetTitle">Monthly category budgets</h3>
+              </div>
+            </div>
+            <div id="budgetList" class="budget-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="expenseTableTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Ledger</p>
+                <h3 id="expenseTableTitle">Recent expenses</h3>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Category</th>
+                    <th>Description</th>
+                    <th>Owner</th>
+                    <th class="numeric">Amount</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="expenseRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="bills" class="section">
+          <section class="panel" aria-labelledby="billsTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Bill calendar</p>
+                <h3 id="billsTitle">Recurring household bills</h3>
+              </div>
+              <span class="status-pill warning" id="nextBillStatus">No bills due</span>
+            </div>
+            <div id="billGrid" class="bill-grid"></div>
+          </section>
+        </section>
+
+        <section id="goals" class="section split-layout">
+          <section class="panel" aria-labelledby="goalsTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Savings</p>
+                <h3 id="goalsTitle">Shared goals</h3>
+              </div>
+            </div>
+            <div id="goalList" class="goal-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="timelineTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Projection</p>
+                <h3 id="timelineTitle">Goal timeline</h3>
+              </div>
+            </div>
+            <div class="chart-wrap tall">
+              <canvas id="goalChart" aria-label="Savings goal projection"></canvas>
+            </div>
+          </section>
+        </section>
+
+        <section id="investments" class="section split-layout">
+          <section class="panel" aria-labelledby="investmentTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Portfolio</p>
+                <h3 id="investmentTitle">Investment accounts</h3>
+              </div>
+              <span class="status-pill positive" id="portfolioStatus">On track</span>
+            </div>
+            <div id="investmentList" class="investment-list"></div>
+          </section>
+
+          <section class="panel" aria-labelledby="networthTitle">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Progress</p>
+                <h3 id="networthTitle">Savings and investing mix</h3>
+              </div>
+            </div>
+            <div class="chart-wrap tall">
+              <canvas id="assetChart" aria-label="Savings and investments chart"></canvas>
+            </div>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="entryModal" class="modal">
+      <form id="entryForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <p class="eyebrow">New entry</p>
+            <h3>Add money movement</h3>
+          </div>
+          <button class="icon-button" id="closeAddModal" type="button" title="Close" aria-label="Close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Type</span>
+            <select id="entryType" required>
+              <option value="expense">Expense</option>
+              <option value="bill">Bill</option>
+              <option value="income">Income</option>
+              <option value="goal">Goal contribution</option>
+              <option value="investment">Investment contribution</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Owner</span>
+            <select id="entryOwner" required>
+              <option value="Household">Household</option>
+              <option value="Eli">Eli</option>
+              <option value="Elyn">Elyn</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Date</span>
+            <input id="entryDate" type="date" required />
+          </label>
+          <label class="field">
+            <span>Amount</span>
+            <input id="entryAmount" type="number" min="0" step="0.01" placeholder="0.00" required />
+          </label>
+          <label class="field">
+            <span>Category or account</span>
+            <select id="entryCategory" required></select>
+          </label>
+          <label class="field">
+            <span>Description</span>
+            <input id="entryDescription" type="text" maxlength="60" placeholder="Groceries, rent, IRA, vacation..." required />
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <button class="secondary-button" type="button" id="cancelEntry">Cancel</button>
+          <button class="primary-button" type="submit">
+            <i data-lucide="check"></i>
+            Save entry
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
