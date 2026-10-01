@@ -15,3 +15,7 @@ Open `index.html` in a browser.
 - Charts for cash flow, expense mix, goal progress, and asset mix
 - Add-entry modal for expenses, bills, income, goal contributions, and investment contributions
 - Browser localStorage persistence with a reset button
+
+## Junior SWE learning course
+
+[Start the detailed Astra upskilling course](astraupskill/README.md): form modes, stable identities and derived totals, with a codebase map, worked implementation, executable examples, debugging labs, exercises and solution discussions.

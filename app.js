@@ -87,6 +87,7 @@ const defaultState = {
 
 let state = loadState();
 let charts = {};
+let editingExpenseId = null;
 
 const els = {};
 
@@ -153,6 +154,10 @@ function initializeControls() {
   });
 
   els.openAddModal.addEventListener("click", () => {
+    editingExpenseId = null;
+    els.entryType.disabled = false;
+    document.querySelector("#entryModal h3").textContent = "Add money movement";
+    document.querySelector("#entryError").textContent = "";
     updateCategoryOptions();
     els.entryModal.showModal();
   });
@@ -193,19 +198,42 @@ function handleEntrySubmit(event) {
     description: els.entryDescription.value.trim()
   };
 
-  if (!entry.amount || entry.amount < 0) return;
+  const error = validateEntry(entry);
+  const errorNode = document.querySelector("#entryError");
+  if (error) { errorNode.textContent = error; return; }
+  errorNode.textContent = "";
+  if (editingExpenseId) {
+    const existing = state.expenses.find((item) => item.id === editingExpenseId);
+    if (!existing) { errorNode.textContent = "This expense no longer exists."; return; }
+    const updated = { ...existing, ...entry, id: existing.id, category: els.entryCategory.value };
+    const next = { ...state, expenses: state.expenses.map((item) => item.id === existing.id ? updated : item) };
+    try { localStorage.setItem(storageKey, JSON.stringify(next)); }
+    catch { errorNode.textContent = "Could not save. The original expense is unchanged."; return; }
+    state = next;
+    editingExpenseId = null;
+    els.entryType.disabled = false;
+    els.entryForm.reset();
+    els.entryModal.close();
+    render();
+    return;
+  }
+
+  // Create follows the same rule as the edit branch above: build a complete
+  // replacement state, write it, and only then publish. A failed write must not
+  // leave a row on screen that the next reload will erase.
+  const next = structuredClone(state);
 
   if (type === "expense") {
-    state.expenses.push({ ...entry, category: els.entryCategory.value });
+    next.expenses.push({ ...entry, category: els.entryCategory.value });
   }
 
   if (type === "income") {
-    state.incomes.push(entry);
+    next.incomes.push(entry);
   }
 
   if (type === "bill") {
     const dueDate = new Date(`${entry.date}T00:00:00`);
-    state.bills.push({
+    next.bills.push({
       id: entry.id,
       owner: entry.owner,
       name: entry.description,
@@ -218,16 +246,19 @@ function handleEntrySubmit(event) {
   }
 
   if (type === "goal") {
-    const goal = state.goals.find((item) => item.name === els.entryCategory.value);
+    const goal = next.goals.find((item) => item.name === els.entryCategory.value);
     if (goal) goal.current += entry.amount;
   }
 
   if (type === "investment") {
-    const account = state.investments.find((item) => item.account === els.entryCategory.value);
+    const account = next.investments.find((item) => item.account === els.entryCategory.value);
     if (account) account.balance += entry.amount;
   }
 
-  saveState();
+  try { localStorage.setItem(storageKey, JSON.stringify(next)); }
+  catch { errorNode.textContent = "Could not save. Nothing was added."; return; }
+  state = next;
+
   els.entryForm.reset();
   els.entryDate.value = new Date().toISOString().slice(0, 10);
   els.entryModal.close();
@@ -536,7 +567,8 @@ function renderExpenses(view) {
         <td><span class="owner-chip">${escapeHtml(expense.owner)}</span></td>
         <td class="numeric"><strong>${money(expense.amount)}</strong></td>
         <td class="numeric">
-          <button class="danger-button" type="button" data-delete-expense="${expense.id}" title="Delete expense" aria-label="Delete expense">
+          <button type="button" class="icon-button" data-edit-expense="${expense.id}" aria-label="Edit ${escapeHtml(expense.description)}">Edit</button>
+            <button class="danger-button" type="button" data-delete-expense="${expense.id}" title="Delete expense" aria-label="Delete expense">
             <i data-lucide="trash-2"></i>
           </button>
         </td>
@@ -544,6 +576,9 @@ function renderExpenses(view) {
     `).join("");
 
   els.expenseRows.innerHTML = rows || `<tr><td colspan="6"><div class="empty-state">No expenses for this month and view.</div></td></tr>`;
+  els.expenseRows.querySelectorAll("[data-edit-expense]").forEach((button) => {
+    button.addEventListener("click", () => editExpense(button.dataset.editExpense));
+  });
   els.expenseRows.querySelectorAll("[data-delete-expense]").forEach((button) => {
     button.addEventListener("click", () => {
       state.expenses = state.expenses.filter((expense) => expense.id !== button.dataset.deleteExpense);
@@ -746,4 +781,35 @@ function deepMerge(target, source) {
     }
   });
   return output;
+}
+
+function validateEntry(entry) {
+  if (!Number.isFinite(entry.amount) || entry.amount <= 0 || entry.amount > 999999999.99)
+    return "Enter an amount greater than zero and no more than 999,999,999.99.";
+  if (Math.abs(entry.amount * 100 - Math.round(entry.amount * 100)) > 0.00001)
+    return "Use no more than two decimal places.";
+  if (!entry.description) return "Enter a description.";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(entry.date)) return "Enter a valid date.";
+  const date = new Date(`${entry.date}T00:00:00Z`);
+  if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== entry.date)
+    return "Enter a real calendar date.";
+  return "";
+}
+
+function editExpense(id) {
+  const expense = state.expenses.find((item) => item.id === id);
+  if (!expense) return;
+  editingExpenseId = id;
+  els.entryType.value = "expense";
+  els.entryType.disabled = true;
+  updateCategoryOptions();
+  els.entryOwner.value = expense.owner;
+  els.entryDate.value = expense.date;
+  els.entryAmount.value = expense.amount;
+  els.entryCategory.value = expense.category;
+  els.entryDescription.value = expense.description;
+  document.querySelector("#entryModal h3").textContent = "Edit expense";
+  document.querySelector("#entryError").textContent = "";
+  els.entryModal.showModal();
+  els.entryDescription.focus();
 }
