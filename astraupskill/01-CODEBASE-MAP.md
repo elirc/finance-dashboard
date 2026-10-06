@@ -1,54 +1,63 @@
-# Codebase map and reading order
+# Codebase map
 
 [Course index](README.md)
 
-## The problem this project solves
+## Files
 
-Expenses could be added and deleted, but there was no edit action. The shared submit handler also accepted some malformed amounts without useful feedback. The improvement you will study is: The existing modal supports an expense-edit mode with prefilled values, positive finite two-decimal amounts, real calendar dates and nonblank descriptions. Failed validation or storage keeps the original expense and the editor open. Totals continue to be derived from state.
+| File | What it holds |
+|---|---|
+| `index.html` | Page layout, the `<dialog id="entryModal">` add/edit form (fields from line 241), `<p id="entryError" role="alert">` (line 275), canvases for four charts, and the Chart.js CDN script (line 8). |
+| `app.js` | Everything else: seed data, state, event wiring, validation, rendering and storage. |
+| `styles.css` | Presentation only. |
+| `test/browser.cjs` | Opens `index.html` in jsdom and evaluates the real `app.js` inside it (see 04). |
+| `test/expense-edit.test.cjs` | Four regression tests for the edit and create paths. |
 
-## Data model
+## `app.js` in reading order
 
-The saved document contains expenses, incomes, budgets, bills, goals and investments. An expense has id, owner, date, category, description and amount. Editing changes its fields, not its id or the number of expenses.
+| Lines | What |
+|---|---|
+| 1 | `storageKey` |
+| 41-86 | `defaultState`: `budgets`, `incomes`, `expenses`, `bills`, `goals`, `investments` (seeded July 2026 data) |
+| 88-90 | Module-level mutable state: `state`, `charts`, `editingExpenseId` |
+| 94-99 | `DOMContentLoaded`: cache elements, wire controls, first render |
+| 141-174 | `initializeControls`: month picker set to today, Reset, Add, Close/Cancel, submit |
+| 176-184 | `loadState`: parse storage and **shallow-merge** it over a clone of `defaultState`. Any missing top-level collection falls back to the seed data. |
+| 186-188 | `saveState`: an unguarded `localStorage.setItem` |
+| 190-267 | `handleEntrySubmit`: build entry, validate, then the edit branch (205-219) or the create branch (224-266) |
+| 269-284 | `updateCategoryOptions`: rebuilds the category `<select>` for the chosen type |
+| 286-298 | `render`: recompute the view and redraw everything |
+| 300-342 | `getViewData`: filter by owner and month, compute every total |
+| 558-589 | `renderExpenses`: rows with Edit (570) and Delete (571) buttons, and their listeners |
+| 591-639 | `renderBills`: bill cards and the paid checkbox listener (631-638) |
+| 786-797 | `validateEntry` |
+| 799-815 | `editExpense`: switch the modal into edit mode |
 
-An object is a named collection of fields. An array is an ordered collection of values. An id answers “which record?”; an index answers “where is it in this array right now?” Those questions are different whenever the list can be filtered, reordered or edited. Persisted data is the form that must survive a process/page restart. Derived data can be recomputed from that persisted state.
+## The data an expense carries
 
-## Trace one action
+`{ id, owner, date, category, description, amount }`, for example `exp-1` at `app.js:57`. New ids are minted at `app.js:194` as `` `${type}-${crypto.randomUUID()}` ``. Dates are `YYYY-MM-DD` strings, and month filtering is a string prefix test (`item.date.startsWith(month)`, line 304). Amounts are JavaScript numbers.
 
-1. The ledger Edit button passes an expense id.
-2. editExpense pre-fills the existing modal and fixes its type to expense.
-3. handleEntrySubmit constructs and validates a candidate.
-4. A new state replaces only the matching expense while retaining its id.
-5. Storage succeeds before state is published.
-6. render derives totals and charts from the updated state.
+## Every place the app writes to storage
 
-```mermaid
-flowchart LR
-    A[Input or user action] --> B[Validate and normalize]
-    B --> C[Compute intended change]
-    C --> D[Persist through the project boundary]
-    D --> E[Return or render observed state]
-    B --> F[Explain invalid input]
-    D --> G[Handle a failed write]
-```
+| Where | Trigger | Order | Guarded? |
+|---|---|---|---|
+| `app.js:210-212` | edit submit | build `next` -> `setItem` in `try` -> `state = next` | yes |
+| `app.js:258-260` | create submit | `structuredClone(state)` -> mutate copy -> `setItem` in `try` -> `state = next` | yes |
+| `app.js:150-152` | Reset button | `state = clone(defaultState)` -> `saveState()` -> `render()` | no |
+| `app.js:584-586` | Delete expense | `state.expenses = filter(...)` -> `saveState()` -> `render()` | no |
+| `app.js:633-636` | bill paid checkbox | `bill.paid = checked` (in place) -> `saveState()` -> `render()` | no |
 
-This diagram names responsibilities, not necessarily separate files. A small browser program can keep them in app.js. A larger API spreads them across controllers, services and models. Follow the actual sequence above rather than assuming every repository has the same architecture.
+In the unguarded rows, a throwing `setItem` leaves `state` already changed, and `render()` is never reached. Memory, storage and screen then disagree; 05-PRACTICE Exercise 4 measures this.
 
-## Where to read first
+## The edit-mode flag
 
-1. [app.js](../app.js): locate `editExpense` and read its inputs, branches and return/side effects.
-2. [test/expense-edit.test.cjs](../test/expense-edit.test.cjs): read the scenario names before the helper code.
-3. The root [README](../README.md): connect setup and the larger application workflow.
+`editingExpenseId` (line 90) is the whole mode switch.
 
-## Source navigation
+- **Set:** in `editExpense` (line 802).
+- **Cleared:** when Add is clicked (line 157) and after a successful edit (line 213).
+- **Not cleared:** Close and Cancel (lines 164-165) only close the dialog.
 
-- [app.js](../app.js)
+The flag stays stale until the next Add click. That is harmless today, because Add is the only other way to open the dialog. But any new opener must remember to reset it, or a "create" would overwrite an expense.
 
-## A practical reading technique
+## Totals are derived
 
-At each function boundary, write down the value coming in, the value going out and any side effect. A side effect includes a storage write, SQL query, network request, timer registration or DOM update. If a function calls another function, inspect only that next dependency until you can finish the chosen trace. Return to unrelated files later.
-
-For this lesson, start with: **The fixture contains one $10.00 expense and no paid bills. Edit it to $12.50. There must still be exactly one expense with the same id, monthly spending must be $12.50, and reload must retain $12.50. Trying -1 or 1.001 must leave $10.00 unchanged in a fresh fixture.** Mark where the id, time, amount or other important value changes representation. For example, JSON serializes values into text; a date field may be a calendar string; SQL aggregates may return a different type from individual rows. Representation changes are common bug locations.
-
-## Check your understanding
-
-Without reading the solution, answer: Who owns the mutable state? Which input is untrusted? Which function first decides whether the operation is valid? What survives reload or restart? What observation would prove that the operation partially failed? Point to a source file for each answer, rather than describing a generic app from memory.
+`getViewData` (lines 300-342) recomputes every number on each `render()`. Nothing is cached. One detail surprises people: monthly spending is `sum(expenses) + sum(paidBills)` (line 315). Bills have no date, only a `dueDay`, so `getViewData` filters them by owner only, never by month (line 308). Marking a bill paid therefore raises "spent" in *every* month you view.

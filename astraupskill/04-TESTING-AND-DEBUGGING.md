@@ -4,46 +4,52 @@
 
 ## Run the checks
 
-Serve this folder over HTTP and open the printed URL: `npx serve .` or `python -m http.server 8000`. Do not double-click `index.html`. `app.js` reads `localStorage` at module load, and over a `file://` origin several browsers either block storage outright or share one origin with every other local page, so the dashboard looks empty or shows someone else's records. The delivered browser check used a local HTTP server. For the automated DOM tests, run `npm install`, then `npm test` from this project folder.
-
-```text
-npm test
+```bash
+npm install                                 # installs jsdom (the only dependency)
+npm test                                    # node --test test/*.test.cjs
+node --test test/expense-edit.test.cjs      # same thing, shell-independent
 ```
 
-## What the test suite proves
+Expected: `# tests 4`, `# pass 4`, `# fail 0`.
 
-Read [test/expense-edit.test.cjs](../test/expense-edit.test.cjs). The suite targets **form modes, stable identities and derived totals** and uses the worked fixture:
+## How `test/browser.cjs` runs the real app
 
-The fixture contains one $10.00 expense and no paid bills. Edit it to $12.50. There must still be exactly one expense with the same id, monthly spending must be $12.50, and reload must retain $12.50. Trying -1 or 1.001 must leave $10.00 unchanged in a fresh fixture.
+`openApp(saved)` (63 lines) builds a fake browser around the unmodified `index.html` and `app.js`:
 
-Cases 3 and 4 cover the other two paths through the same handler. With `Storage.prototype.setItem` throwing, creating a $5.25 expense adds nothing to `state` or to storage and leaves the modal open with “Could not save”. And when the edited row disappears between opening the editor and submitting it, `#entryError` reads exactly “This expense no longer exists.” and the stored amount is still 10 — the branch at `app.js:207` that was previously untested.
+1. **Create the page** (lines 8-11): a `JSDOM` from `index.html` at `http://localhost/` with `runScripts: "outside-only"`. The page's own `<script>` tags, including the Chart.js CDN tag, do not run. So `window.Chart` is undefined, and `upsertChart` returns early (`app.js:469`). Charts are never tested.
+2. **Fill gaps jsdom lacks** (lines 14-23): `crypto.randomUUID`, `structuredClone`, and `showModal()`/`close()` stubs that just set `dialog.open`. Tests assert on that flag.
+3. **Seed storage** (lines 33-34) with whatever document the test passes in, before the app loads.
+4. **Load the app** (lines 35-37): evaluate `app.js` in the window's VM context, then dispatch `DOMContentLoaded`.
 
-The expectation should not be copied from the function being tested. Hand-calculate counts, amounts, identities or elapsed time first. Otherwise the same mistake can appear in both implementation and expected result. Tests that exercise only a mocked dependency prove a narrower contract than tests against the real dependency; read the helper to understand which kind you are running.
+Because `app.js` declares `let state` at the top level of that context, `app.evaluate("state.expenses[0].amount")` can read live app state. `app.evaluate("editExpense('e1')")` can call app functions directly.
 
-In this project, jsdom runs the actual app.js against its HTML. The helper supplies browser APIs missing from jsdom and a controllable timer clock. It does not replace the app’s business functions. A real browser check is still useful for layout, focus visibility and native interaction.
+The helper also fakes `Date.now` and captures `setInterval` (lines 24-32). `app.js` uses neither for scheduling; `Date.now` appears only as a fallback id at line 194. Those lines are shared scaffolding, not something these tests depend on.
 
-## Debugging workflow
+## The four tests
 
-1. Reproduce the smallest failing case with the exact input saved in your notes.
-2. Inspect the relevant event/request. Confirm the intended handler actually ran.
-3. Pause at `editExpense` and inspect input types as well as values.
-4. Follow validation branches, noting whether any state or persistence changed before rejection.
-5. Inspect the write result and the subsequent render/response. Separate storage correctness from display correctness.
-6. Add a regression reproducing the failure, make the smallest justified fix, then run the focused suite and relevant broader checks.
+| # | Line | Arrange / act | Proves |
+|---|---|---|---|
+| 1 | 21 | One $10 July expense; set month to `2026-07`; click its Edit button; amount `12.50`; submit | Stored array still has one expense, id `e1`, amount 12.5; `#expenseKpi` shows 12.50; a fresh `openApp` from the saved snapshot still has 12.5 |
+| 2 | 39 | `editExpense('e1')`; submit `-1`, `0`, `1.001`; then make `setItem` throw and submit `20` | Stored amount stays 10 through all three rejections; after the failed write, `state` is still 10, the dialog is open, `#entryError` says "Could not save" |
+| 3 | 61 | Open the modal as an expense, fill fields, make `setItem` throw, submit | `state.expenses.length` and the stored length both stay 1; dialog open; "Could not save" |
+| 4 | 88 | `editExpense('e1')`, then empty `state.expenses` before submitting | `#entryError` is exactly "This expense no longer exists."; storage untouched; dialog open |
 
-Avoid changing several layers at once when you do not yet know where the failure starts. A correct backend with a stale UI needs a different fix from a malformed query or an invalid saved document.
+Two things to notice:
 
-## Failure experiments
+- **Month picker.** Tests 1 and 3 set the month picker to `2026-07`. `initializeControls` sets it to *today's* month (`app.js:143`), and the fixture expense is dated July 2026. Without that line the expense is filtered out, there is no Edit button, and `app.event('[data-edit-expense="e1"]', ...)` throws on `null`.
+- **Missing collections.** The fixture omits `budgets`. `loadState`'s shallow merge (`app.js:180`) fills in the seven default budgets, so category options still exist.
 
-- Reuse the invalid fixture from the tests and verify no unintended records or fields change.
-- Reload or restart after a successful operation to distinguish persistence from temporary screen state.
-- Repeat the operation and explain whether it should be idempotent, rejected or intentionally create another record.
-- Simulate the relevant timing or storage failure only in a disposable fixture. Restore normal behavior after the experiment.
+## Debugging a failure
 
-## Reading an assertion failure
+- **`Cannot read properties of null (reading 'dispatchEvent')`.** Your selector matched nothing. Usually the month filter hid the row, or you clicked before `render()`.
+- **Stored value changed after a rejected input.** Validation ran *after* a write. Check that `validateEntry` is still called at line 201, before either branch.
+- **`state` changed after a failed write.** Something mutated published state before `setItem`: a shallow copy in the create branch, or a new branch that edits `state` directly.
+- **A row is visible that storage does not have, or the reverse.** You are probably in one of the three unguarded writers (01, "Every place the app writes to storage"). The listener threw before `render()`.
+- **jsdom prints `Error: Uncaught [Error: quota]`.** This happens when an unguarded writer throws inside an event listener. jsdom reports it to the console, but it does *not* fail the test. Assert on state, storage and DOM explicitly.
 
-“Expected 3, received 4” is evidence about one observation, not a complete diagnosis. Ask whether the fixture created an extra record, the operation ran twice, an old record survived, or the assertion looked at an unfiltered collection. Start from the state table and trace the first point where the actual value diverges. A stack trace identifies where the program noticed a problem, which may be later than the code that caused it.
+## What the tests do not prove
 
-## Verification record
-
-The companion [VERIFICATION.md](VERIFICATION.md) records checks actually run for this implementation. Record your own command, date, result and any environmental prerequisite when practicing. A passing test does not imply every route, browser, dependency version or production deployment has been exercised.
+- Layout, focus handling, or real browser constraint validation. Tests dispatch `submit` directly, bypassing `required`, `min` and `step` checks.
+- Chart rendering.
+- Multi-tab behaviour: two tabs each hold their own `state` and overwrite each other's saves.
+- The Reset, Delete and bill-toggle paths.

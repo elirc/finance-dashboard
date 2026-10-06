@@ -1,38 +1,37 @@
-# Verification: Finance Dashboard: validated expense editing
+# Verification
 
 [Course index](README.md)
 
-**Implementation date:** 2026-09-08. Checks below ran on isolated working copies before the reviewed files were applied to this project.
+## Original delivery (frozen record)
+
+**Implementation date:** 2026-09-08.
 
 | Check | Result |
 |---|---|
-| tests | Passed (exit code 0) |
+| `test/expense-edit.test.cjs` | Passed (exit code 0) |
 | Real Chromium browser interaction | Passed |
 
-**Automated test cases:** 4 (`test/expense-edit.test.cjs`). Two were delivered with the original change; cases 3 and 4 were added in the 2026-09-17 follow-up that routed the create branch through the same persist-then-publish shape as the edit branch.
+Two tests were delivered with the original change. Tests 3 and 4 were added in the 2026-09-17 follow-up that moved the create branch to persist-then-publish. That follow-up run reported `# tests 4 / # pass 4 / # fail 0` on Node 22.16.0 with jsdom 25. It also noted that the directory form `node --test test/` failed with `MODULE_NOT_FOUND`; name the file or use `npm test`.
 
-## What was exercised
+## Re-check, 2026-10-06
 
-The fixture contains one $10.00 expense and no paid bills. Edit it to $12.50. There must still be exactly one expense with the same id, monthly spending must be $12.50, and reload must retain $12.50. Trying -1 or 1.001 must leave $10.00 unchanged in a fresh fixture.
+- **Suite:** `node --test test/expense-edit.test.cjs` on Node 22.16.0 with jsdom 25.0.1 (the version pinned in `package-lock.json`) gave `# tests 4`, `# pass 4`, `# fail 0`.
+- **Practice exercises:** every Check in [05-PRACTICE](05-PRACTICE.md) was run as a scratch test against the current `app.js`:
+  - Exercises 3, 4 and 5 against the unmodified file.
+  - Exercises 2 and 6 against scratch copies (the identity sabotage fails test 1 only; the `commitState` refactor passes 7 of 7).
+  - The shallow-copy sabotage described in 02 and 03 fails test 3.
+- **Line references:** all `app.js:N` citations in this course were re-checked against the 815-line file.
 
-Case 3: with `Storage.prototype.setItem` throwing, creating a $5.25 expense leaves one expense in `state` and one in storage, keeps the modal open and reports "Could not save". Case 4: if the edited expense disappears before submit, `#entryError` reads "This expense no longer exists." and nothing is written.
+## Corrections made in this pass
 
-**Follow-up run, 2026-09-17:** `node --test test/expense-edit.test.cjs` on Node 22.16.0 with jsdom 25 installed -> `# tests 4 / # pass 4 / # fail 0`. Note that `node --test test/` (directory form) fails with MODULE_NOT_FOUND on this Node build; name the file, or use `npm test`.
+- **Unguarded writers misnamed.** The earlier text described `app.js:151`, `:585` and `:635` as "bill paid/autopay toggles and the settings form". They are Reset, expense Delete and the bill paid checkbox. There is no autopay toggle or settings form in this app.
+- **Exercise 2 solution would have failed.** It used category `"Travel"`, which is not an option (the select reads back `""`), and asserted a KPI of `15.00`, which `money()` renders as `$15`. It also claimed that dropping `id: existing.id` duplicates the row. It re-keys the row instead; see 06.
+- **Variation 3 assumed `Infinity` reaches `Number.isFinite`.** `type="number"` sanitizes it to `""` first.
+- **Machine-specific paths removed:** references to backup files and reports outside this repository.
 
-**Remaining gap, stated rather than hidden:** three `saveState()` call sites outside the entry handler (`app.js:151`, `:585`, `:635` - bill paid/autopay toggles and the settings form) still write unguarded. Exercise 3 closes them.
+## What is not verified
 
-## Environment and scope
-
-The verification environment used Node 22.16.0. Browser checks used the installed Chromium build.
-
-Tests and builds ran in working copies with an isolated shared dependency harness. Source files were checked against the original content before application. Install this project’s declared dependencies locally to run its scripts; no running service or installed dependency tree is assumed merely because the source changes are present.
-
-The tests target the implemented change and relevant existing behavior. They do not establish production readiness, every browser/version, multi-tab safety or every unrelated workflow. Practice extensions in chapter 5 are not completed features.
-
-## Reproduce the checks
-
-From this project folder: `npm install`, then `npm test`.
-
-The central implementation report in AstraOrganized2/astrafinalplan/TEN_PROJECTS_IMPLEMENTED.md links all ten courses. Machine-readable check results and logs are retained with the implementation tooling in that repository.
-
-Reading the diff: the files Astra touched were re-saved with CRLF line endings and Prettier formatting, so a plain `diff` shows whole files as changed. Compare with `git diff -w`, or `diff -r --strip-trailing-cr -w <backup> <project>` against the pre-change backup, to see only the real edits.
+- **Real-browser constraint validation.** `required`, `min` and `step` block some submits before `handleEntrySubmit` runs. The tests bypass this.
+- **Charts.** Chart.js does not load under jsdom.
+- **Multi-tab behaviour, and browsers other than the one used in the original check.**
+- **The three unguarded writers.** They are characterized by 05 Exercise 4 but not fixed in the repo.

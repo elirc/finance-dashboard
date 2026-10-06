@@ -1,169 +1,76 @@
-# Solutions and engineering review
+# Solutions and review
 
-[Course index](README.md) · [Practice prompts](05-PRACTICE.md)
+[Course index](README.md) · [Practice](05-PRACTICE.md)
 
-Attempt each exercise before using these notes. These are solution approaches and review criteria, not claims that every extension has been implemented. The actual completed behavior is described in the worked-change chapter.
+Every Check below was run on 2026-10-06 against the current `app.js`, with jsdom 25.0.1 on Node 22.16.0. Sabotage and refactor exercises were run on scratch copies outside the repo.
 
-## Existing implementation
+## Exercise answers
 
-The existing modal supports an expense-edit mode with prefilled values, positive finite two-decimal amounts, real calendar dates and nonblank descriptions. Failed validation or storage keeps the original expense and the editor open. Totals continue to be derived from state.
+**1. Predict, then run.** 4 pass. A single check at the end of test 2's loop would also catch a bad write, because nothing ever writes 10 back. Checking inside the loop *localizes* it instead: the failure names the exact value (`-1`, `0` or `1.001`) that slipped through.
 
-The key model is: The saved document contains expenses, incomes, budgets, bills, goals and investments. An expense has id, owner, date, category, description and amount. Editing changes its fields, not its id or the number of expenses.
+**2. Identity sabotage.** Only test 1 fails: `expected: 'e1'`, `actual: 'expense-…'`. Test 2 never reaches a successful write, test 3 is create mode, and test 4 exits at the existence check. The length assertion in test 1 still passes. Removing the line does not duplicate the row; `map` keyed on `existing.id` replaces it in place. It *re-keys* the record. Anything else that referred to `e1` (a future receipt attachment, an undo stack, a URL) would now point at nothing. Identity bugs are often quiet like this.
 
-The worked fixture should behave as follows: The fixture contains one $10.00 expense and no paid bills. Edit it to $12.50. There must still be exactly one expense with the same id, monthly spending must be $12.50, and reload must retain $12.50. Trying -1 or 1.001 must leave $10.00 unchanged in a fresh fixture.
+**3. Category move.** The provided test passes: stored categories are `Transportation` and `Transportation`, the KPI reads `$15`, and the budget list contains `Transportation $15 of $640`. A version that used `"Travel"` would silently set the select to `""`. `validateEntry` (`app.js:786-797`) does not check category, so the expense would be saved with an empty category, and its spending would disappear from every budget bar. If you want to close that, validate `els.entryCategory.value` against the options that `updateCategoryOptions` produced. Do not just check that it is non-empty.
 
-## Extension solutions
+**4. Unguarded writers.** Both characterizations pass against the current code:
+- Delete: `state` has 1 expense, storage has 2, and the row is still on screen.
+- Bill toggle: `state.bills[0].paid === true` while storage has `false`. The checkbox shows checked, so the screen agrees with memory but not with storage. A reload "unpays" the bill.
 
-### Exercise 1
+In both handlers the exception escapes the listener before `render()` (`app.js:586`, `636`), which is why the screen is not refreshed.
 
-**Prompt:** Display an explicit saved confirmation after an edit.
+**5. Input sanitization.** The table in the exercise is the measured result. A blank amount gets the generic range message. A dedicated "Enter an amount" message belongs in `validateEntry`, keyed on the raw string being empty before `Number()` converts it. That means passing the raw value in, or checking `els.entryAmount.value === ""` in `handleEntrySubmit` before building `entry`.
 
-**Approach:** The modal closes on success (`app.js:264`), so anything announced inside it is removed from the accessibility tree in the same tick. Put a live region in the page, outside the dialog, and write to it after `state = next`.
-
-```html
-<!-- index.html, a sibling of the dashboard content, never inside <dialog> -->
-<p id="saveStatus" role="status" aria-live="polite" class="visually-hidden"></p>
-```
+**6. One commit helper.** This version passed the four original tests plus inverted versions of the Exercise 4 tests (7 of 7) on a scratch copy, and left no `saveState()` callers:
 
 ```javascript
-function announceSaved(text) {
-  const node = document.querySelector("#saveStatus");
-  node.textContent = "";        // force a change even if the text repeats
-  node.textContent = text;      // textContent, never innerHTML: descriptions are user input
-}
-
-// edit branch, after `state = next;`
-announceSaved(`Saved ${updated.description}, ${formatMoney(updated.amount)}.`);
-// create branch, after `state = next;`
-announceSaved(`Added ${entry.description}, ${formatMoney(entry.amount)}.`);
-```
-
-**Review:** The ordinary case is editing Lunch to $12.50 and finding "Saved Lunch, $12.50." in `#saveStatus`. Two naive implementations break, and both are worth demonstrating. The first announces before the write - move the call above the `try` and case 2 still passes (it only checks the stored amount), but a user with a full disk is told their edit was saved when it was not; assert that on a throwing `setItem` the status node is **empty** and only `#entryError` has text. The second puts the live region inside `#entryModal`: the announcement is made and the dialog closes in the same task, and most screen readers announce nothing at all, because a live region that leaves the tree before the next paint never fires. Note the deliberate blank-then-set: assigning identical text twice is not a change, so a second identical save would be silent. The invariant that remains unchanged: the announcement is derived from the record that was actually written (`updated` / `entry` after publication), never from the form fields, which `els.entryForm.reset()` is about to clear.
-
-### Exercise 2
-
-**Prompt:** Add a category-change regression that checks both category and overall totals.
-
-**Approach:** The assertion set is the deliverable. A category change must be visible in *three* derived numbers moving in a coordinated way, and one of them must not move at all.
-
-```javascript
-test("changing an expense category moves money between budgets without changing the total", async () => {
-  const twoExpenses = {
-    ...fixture,
-    expenses: [
-      { id: "e1", owner: "Household", date: "2026-07-10", category: "Food",   description: "Lunch",  amount: 10 },
-      { id: "e2", owner: "Household", date: "2026-07-11", category: "Travel", description: "Train",  amount: 5 },
-    ],
-  };
-  const app = await openApp({ [KEY]: JSON.stringify(twoExpenses) });
-  app.document.querySelector("#monthPicker").value = "2026-07";
-  app.event("#monthPicker", "change");
-
-  const spent = (category) => app.evaluate(
-    `state.expenses.filter(e => e.category === '${category}' && e.date.startsWith('2026-07'))
-       .reduce((sum, e) => sum + e.amount, 0)`);
-  assert.equal(spent("Food"), 10);
-  assert.equal(spent("Travel"), 5);
-
-  app.evaluate("editExpense('e1')");
-  app.document.querySelector("#entryCategory").value = "Travel";
-  app.event("#entryForm", "submit");
-
-  assert.equal(spent("Food"), 0);
-  assert.equal(spent("Travel"), 15);
-  assert.match(app.document.querySelector("#expenseKpi").textContent, /15\.00/);   // unchanged total
-  assert.equal(app.evaluate("state.expenses.length"), 2);                          // no row created
-  assert.equal(app.evaluate("state.expenses.find(e => e.id === 'e1').description"), "Lunch");
-  app.close();
-});
-```
-
-**Review:** The ordinary case is the move itself; the case that breaks a naive implementation is the *total*. An implementation that pushes a new row instead of replacing (drop `id: existing.id` from `app.js:208` and let the minted id survive) still makes Travel read 15 - the assertion most people write - while the KPI silently becomes 25 and the row count becomes 3. That is precisely the "edit becomes an accidental duplicate" bug, and only the unchanged-total assertion catches it. The second thing worth demonstrating: because the category select is repopulated by `updateCategoryOptions` (`app.js:269`), setting `#entryCategory.value` to a category that is not in the current option list silently leaves it at the previous value - so assert `spent("Travel") === 15`, not merely that the submit did not error. The invariant that remains unchanged: budgets hold no per-category totals; every number here is recomputed from `state.expenses` on render, which is why one write moves three displayed figures consistently.
-
-### Exercise 3
-
-**Prompt:** Refactor create and edit to share a storage-first commit helper.
-
-**Approach:** The two branches in `handleEntrySubmit` now do the same three steps in the same order (`app.js:210-212` and `:258-260`), which is exactly the signal to extract a helper. The remaining unguarded writers - `app.js:151`, `:585`, `:635` - are the reason to bother.
-
-```javascript
-// One commit point for the whole app. Returns true when `state` was published.
-function commitState(next, onError) {
-  try {
-    localStorage.setItem(storageKey, JSON.stringify(next));
-  } catch {
-    onError("Could not save. Nothing was changed.");
-    return false;
-  }
+function commitState(next) {
+  try { localStorage.setItem(storageKey, JSON.stringify(next)); }
+  catch { return false; }
   state = next;
   return true;
 }
 
-// edit branch
-const next = { ...state, expenses: state.expenses.map((item) => item.id === existing.id ? updated : item) };
-if (!commitState(next, (text) => { errorNode.textContent = "Could not save. The original expense is unchanged."; })) return;
+// edit branch (replaces the try/catch and `state = next`)
+if (!commitState(next)) { errorNode.textContent = "Could not save. The original expense is unchanged."; return; }
 
 // create branch
-const next = structuredClone(state);
-/* ...the five type branches, all against `next`... */
-if (!commitState(next, (text) => { errorNode.textContent = "Could not save. Nothing was added."; })) return;
+if (!commitState(next)) { errorNode.textContent = "Could not save. Nothing was added."; return; }
 
-// the bill toggle at app.js:577, previously `state.bills[i].paid = !paid; saveState();`
+// delete (app.js:583-587)
+const next = { ...state, expenses: state.expenses.filter((e) => e.id !== button.dataset.deleteExpense) };
+if (!commitState(next)) { window.alert("Could not delete. Nothing was changed."); return; }
+render();
+
+// bill toggle (app.js:632-637)
 const next = structuredClone(state);
-const bill = next.bills.find((item) => item.id === id);
-bill.paid = !bill.paid;
-if (!commitState(next, showToast)) return;
+const bill = next.bills.find((item) => item.id === input.dataset.billPaid);
+if (bill) bill.paid = input.checked;
+if (!commitState(next)) { input.checked = !input.checked; window.alert("Could not save. The bill is unchanged."); return; }
+render();
+
+// reset (app.js:150-152)
+if (!commitState(structuredClone(defaultState))) { window.alert("Could not reset. Your data is unchanged."); return; }
 render();
 ```
 
-**Review:** The ordinary case is that all four existing tests pass unchanged - a pure refactor should be invisible to them. Two implementations break, in opposite directions. The first keeps the shallow `{ ...state }` for the create path: `goal` and `investment` entries mutate nested objects (`app.js:248-255`), so `next.goals[0]` and `state.goals[0]` are the same object and a failed write has already moved the goal's `current`. Demonstrate it with a goal contribution under a throwing `setItem` and assert `state.goals[0].current` is unchanged - a shallow spread fails this and `structuredClone` passes. The second centralizes the *message* as well as the write, which loses real information: "The original expense is unchanged" and "Nothing was added" tell the user different things about what to do next, which is why `onError` is a callback rather than a string constant. The invariant that remains unchanged: validation stays at the form boundary. `validateEntry` (`app.js:786`) must not move into `commitState`, because it needs the field-level context to say *which* field is wrong, and a storage helper has no business knowing about decimal places.
+Review points:
 
-### Exercise 4
+- **The bill toggle must undo the checkbox itself** (`input.checked = !input.checked`). `render()` does not run on failure, so nothing else would correct the DOM.
+- **Delete can use a shallow spread** because `filter` returns a new array. The bill toggle cannot, because it mutates a nested object. That is the same rule as the create branch.
+- **`window.alert` is a placeholder.** jsdom does not implement it, so stub `app.w.alert = () => {}` in tests. A page-level `role="status"` element outside the `<dialog>` is the better product choice.
+- **Messages stay at the call site.** `commitState` returns a boolean rather than owning the text, because "unchanged" and "nothing was added" tell the user different things.
 
-**Prompt:** Migrate expense amounts to integer cents with a versioned saved-data migration.
+**7. Integer cents.** `Math.round(v * 100)` gives 115, 820, 435 for 1.15, 8.2, 4.35. `Math.floor` would give 114 and 434 for the first and last. Watch `loadState`: `{ ...structuredClone(defaultState), ...JSON.parse(stored) }` (`app.js:180`) means a stored document without `version` still gets the default `budgets` and other collections. Your migration must run *after* that merge and must not migrate the defaults twice. If the version is bumped and stored once, `migrate(migrate(doc))` equals `migrate(doc)`.
 
-**Approach:** Cents everywhere internally; decimals only at the two edges (the input field and the formatter). Version the document so the conversion runs once and is recognisable afterwards.
+**8. A second entity.** A single `editing = { type, id } | null` scales better than one variable per entity. It is reset in the same two places as today (Add at `app.js:157`, after success at `213`). Also reset it on Close and Cancel (164-165), which today do not clear the flag. For bills, either store the full due date, or make the edit form ask for a day of the month. Re-deriving `dueDay` from a date picker defaults to *today's* date (`app.js:144`), which silently moves the bill. The catch-it test: edit an income, then assert `state.incomes.length` is unchanged and the id is preserved, as in test 1.
 
-```javascript
-const STORAGE_VERSION = 2;
+## Review notes on the delivered code
 
-const toCents = (value) => Math.round(Number(value) * 100);          // "12.50" -> 1250
-const fromCents = (cents) => (cents / 100).toFixed(2);               // 1250 -> "12.50"
+Observations with evidence, for practising review comments:
 
-function migrate(loaded) {
-  if (loaded.version === STORAGE_VERSION) return loaded;
-  // Keep the original document. A migration that loses data is worse than no migration.
-  try { localStorage.setItem(`${storageKey}:v1-backup`, JSON.stringify(loaded)); } catch { /* ignore */ }
-  return {
-    ...loaded,
-    version: STORAGE_VERSION,
-    expenses:    loaded.expenses.map((e) => ({ ...e, amountCents: toCents(e.amount), amount: undefined })),
-    incomes:     loaded.incomes.map((i) => ({ ...i, amountCents: toCents(i.amount), amount: undefined })),
-    bills:       loaded.bills.map((b) => ({ ...b, amountCents: toCents(b.amount), amount: undefined })),
-    goals:       loaded.goals.map((g) => ({ ...g, currentCents: toCents(g.current), targetCents: toCents(g.target) })),
-    investments: loaded.investments.map((a) => ({ ...a, balanceCents: toCents(a.balance) })),
-  };
-}
-```
-
-`validateEntry` then becomes simpler, not more complex: `Number.isSafeInteger(entry.amountCents) && entry.amountCents > 0 && entry.amountCents <= 99999999999` replaces the epsilon comparison at `app.js:789` entirely, because "at most two decimal places" is no longer a property to detect - it is the representation.
-
-**Review:** The ordinary case is the one the exercise names: two expenses of `0.10` and `0.20` must total exactly `30` cents, and `assert.equal(total, 30)` must pass where `assert.equal(0.1 + 0.2, 0.3)` fails. Two naive implementations break. The first uses `Math.floor(value * 100)` or `parseInt(value * 100)`: `1.15 * 100` is `114.99999999999999`, so a $1.15 lunch is stored as 114 cents and every migrated ledger quietly loses money - demonstrate with a fixture containing `1.15`, `8.2` and `4.35` and assert 115, 820 and 435. The second migrates in place without a version field, so the second load multiplies by 100 again and a $12.50 expense becomes $12,500; the version check is not ceremony, it is the idempotency guard for a data migration - run `migrate(migrate(doc))` in a test and assert it equals `migrate(doc)`. The invariant that remains unchanged: totals are still derived per render, so nothing outside the formatter needs to know the unit changed - and that is only true because the delivered design refused to cache a total anywhere.
-
-## Review questions with answer guidance
-
-**Why not trust input just because it came from this UI?** A caller can bypass the UI, a saved file can be edited, and older data can have a different shape. Validate at the boundary that owns the operation.
-
-**Why keep the id stable?** It identifies the same domain record across views and edits. Changing it can create duplicates, disconnect child records or make reconciliation impossible.
-
-**What makes the failure test meaningful?** It observes the promised state invariant. For this project, explain exactly why the failing scenario in [test/expense-edit.test.cjs](../test/expense-edit.test.cjs) would detect the original or a plausible regression.
-
-**What does the test not prove?** A bounded suite does not prove all concurrency, browsers, deployment configurations or unrelated domain behavior. Name the real limitation from this lesson instead of adding a generic disclaimer.
-
-**When should you extract a helper?** When it isolates a coherent responsibility, makes an invariant clearer or enables a meaningful test without duplicating application logic. A pure validator and a shared persistence boundary are common examples, but do not abstract solely to increase the number of files.
-
-## A sample change explanation
-
-“The previous behavior was: Expenses could be added and deleted, but there was no edit action. The shared submit handler also accepted some malformed amounts without useful feedback. I changed the implementation so that: The existing modal supports an expense-edit mode with prefilled values, positive finite two-decimal amounts, real calendar dates and nonblank descriptions. Failed validation or storage keeps the original expense and the editor open. Totals continue to be derived from state. The strongest evidence is the regression that exercises the worked fixture and checks authoritative state. A remaining design question is the final stretch exercise.”
-
-Replace that explanation with your own words and actual test results. A strong junior engineer can connect a concrete user problem to code, verification and a clearly stated limit. Completing that explanation independently is the final checkpoint for this course.
+- **Persist-before-publish covers two of five writers.** Delete, the bill toggle and Reset still mutate first (`app.js:150-151`, `584-585`, `633-635`). Exercise 4 shows the resulting three-way disagreement.
+- **Paid bills count as spending in every month.** `expenseTotal = sum(expenses) + sum(paidBills)` (`app.js:315`). Bills are filtered by owner only (line 308). A bill marked paid while viewing July also raises August's "spent". Worth raising as a product question.
+- **`editingExpenseId` survives Close and Cancel** (`app.js:164-165`). It is harmless only because Add resets it (line 157). A second opener, such as a keyboard shortcut, would inherit a stale edit mode and overwrite an expense.
+- **Category is not validated.** See Exercise 3.
+- **Ids are interpolated into HTML attributes unescaped** (`data-edit-expense="${expense.id}"`, `app.js:570`; also 571 and 615). App-minted ids are safe UUIDs. But `loadState` trusts whatever is in `localStorage`, so a hand-edited or imported document could inject markup. `escapeHtml` already exists (`app.js:765`); use it on ids too.
+- **Two tabs overwrite each other.** Each tab keeps its own `state` and writes the whole document. There is no `storage` event listener, so the last save wins.

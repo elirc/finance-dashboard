@@ -1,41 +1,66 @@
-# Concepts explained from first principles
+# Concepts
 
 [Course index](README.md)
 
-## The central idea: form modes, stable identities and derived totals
+## 1. A shared form needs an explicit mode
 
-Create and edit look similar in the UI but have different identity semantics. Reusing a form is reasonable only when its mode is explicit. A new id on edit would turn an update into an accidental duplicate; replacing the entire expense array with a one-record array would erase unrelated data. The map operation expresses a precise replacement. Deriving totals avoids a second state variable that can become stale after editing. Persistence-before-publish is used on the new edit path so storage failure does not pretend success. Existing add and other dashboard workflows have their own behavior and are not a general transactional storage engine. Amounts remain JavaScript numbers in this educational app; validation limits decimal places, but robust financial systems commonly use integer minor units or decimal arithmetic. This exercise is about software state and validation, not financial advice.
+Create and edit use the same `<dialog>`, but they mean different things:
 
-## Invariants: a precise way to describe correctness
+- **Create** mints a new id and adds a record.
+- **Edit** keeps an existing id and replaces one record.
 
-An invariant is a rule that must remain true before and after an operation. “The app works” is too broad to test. “A failed import writes no records” or “editing preserves the record id” gives you something observable. For this project, derive your invariants from this behavior:
+The app makes the mode explicit with one variable, `editingExpenseId`, which `handleEntrySubmit` checks at `app.js:205`. `editExpense` also disables the type select (`app.js:804`), so an expense cannot be "edited" into an income. Wherever a form serves two modes, find the single place the mode is decided and every place it is reset. Here that is lines 157, 213 and 802 (see 01, "The edit-mode flag").
 
-> The existing modal supports an expense-edit mode with prefilled values, positive finite two-decimal amounts, real calendar dates and nonblank descriptions. Failed validation or storage keeps the original expense and the editor open. Totals continue to be derived from state.
+## 2. Identity survives an edit
 
-Turn each sentence into a small state table. The columns are initial state, input, expected final state and expected feedback. Include one rejected input and one retry/repeated action where relevant. A useful invariant should be meaningful even if the implementation changes from an array to a database or from one UI component to another.
+`handleEntrySubmit` builds the entry, including a brand-new id, *before* it knows the mode (`app.js:193-199`). The edit branch then fixes the id back:
 
-## Validation versus normalization
+```javascript
+const updated = { ...existing, ...entry, id: existing.id, category: els.entryCategory.value };
+```
 
-Validation rejects values the operation cannot accept. Normalization converts acceptable values to the representation the rest of the program expects. Trimming a comparison string is normalization; rejecting an empty required field is validation. Neither operation should silently invent facts. If a quantity is free-form text, do not guess a numerical interpretation. If an imported record is malformed, do not quietly save only the convenient subset unless that is the explicit product policy.
+Spread order is the whole mechanism: later keys win, so `id: existing.id` must come after `...entry`. Removing it does not create a duplicate row. `map` still replaces the record at the old position (`app.js:209`). What it does is silently re-key the record to `expense-<uuid>`. Test 1 catches that (`assert.equal(stored.expenses[0].id, "e1")`); 05 Exercise 2 has you prove it.
 
-Apply this distinction to the data model:
+## 3. Derived values cannot go stale
 
-The saved document contains expenses, incomes, budgets, bills, goals and investments. An expense has id, owner, date, category, description and amount. Editing changes its fields, not its id or the number of expenses.
+No total is stored. `getViewData` (`app.js:300-342`) recomputes income, spending, open bills, net worth and the savings rate from `state` on every `render()`. So an edit only has to change one record, and every KPI, chart and budget bar follows. This is also why moving an expense's date to another month makes it vanish from the current view without being deleted. The month filter is a string prefix test (`app.js:304`).
 
-Which fields can be omitted? Which can be empty? Which have a bounded vocabulary? Which have stable identity? Write those answers down before adding another conditional. A schema is simply an explicit description of that expected shape and meaning.
+## 4. Persist, then publish
 
-## State transitions and failure boundaries
+"Publish" means assigning to `state`, because that is what `render()` reads. Both submit branches follow the same order:
 
-Every change has an ordering. If memory changes first and persistence fails, the UI can show data that will disappear after reload. If persistence succeeds first and rendering fails, the stored data may be correct while the screen is stale. There is no universal answer for every feature, but the choice must be deliberate and observable. The worked change makes one specific promise; the tests check that promise.
+1. Build a complete replacement (`next`).
+2. `localStorage.setItem(storageKey, JSON.stringify(next))` inside `try`.
+3. On failure, show a message and `return` while the dialog is still open.
+4. On success, `state = next`, then close the dialog and render.
 
-A promise represents an operation that completes later. `await` does not make it infallible or atomic; it gives the caller a place to handle success and rejection. Similarly, calling several functions inside one `try` block does not create a database transaction. Atomicity must come from a storage operation or transaction boundary that actually provides it.
+If the write throws, nothing visible has changed and the user can retry. The three unguarded writers (`app.js:150-151`, `584-585`, `633-635`) do it the other way round: mutate, then save. When their save throws, the in-memory state has changed but storage has not. `render()` is skipped because the exception escapes the listener, so the screen shows a third version.
 
-## Identity, representation and derived values
+## 5. A copy must be deep enough for what you mutate
 
-Keep a stable id when updating an existing record. Compute display-only values from authoritative data when feasible, so there are fewer independently mutable facts to keep synchronized. Be careful when converting between strings and numbers: `Number('')` is zero, JSON cannot faithfully represent Infinity, and a date string can have different semantics from a timestamp. The specific conversions in this lesson are visible in the worked source, so step through them with a concrete value.
+The edit branch can use a shallow spread, `{ ...state, expenses: state.expenses.map(...) }`. `map` returns a new array and `updated` is a new object, so nothing shared is mutated.
 
-## Small design decisions deserve explanations
+The create branch cannot. It pushes onto arrays (`next.expenses.push`) and increments nested fields (`goal.current += entry.amount`, `app.js:250`; `account.balance += ...`, line 255). With `const next = { ...state }`, both of those would mutate the published `state` before the write. That is why line 224 uses `structuredClone(state)`. The existing test 3 already fails if you swap in a shallow spread, because the pushed expense lands in `state.expenses` too. 06 shows the goal-contribution version of the same failure.
 
-Before extracting a new abstraction, explain what repeated responsibility it would own. A helper that merely renames one expression may add little. A pure validator or one transaction boundary can make an important guarantee easier to test. Prefer an explanation tied to this project’s behavior over a rule such as “all code must use a particular pattern.”
+## 6. The browser converts before you validate
 
-Write a short decision note: “We chose X because it preserves Y under Z. It does not yet solve W.” Use the limitations in the worked example to fill in those letters. This is the beginning of engineering judgment: choosing a bounded solution and accurately describing its limits.
+`<input id="entryAmount" type="number" min="0" step="0.01">` (`index.html:263`) sanitizes its value before `app.js` sees it. Measured in jsdom (05 Exercise 5):
+
+| Typed or set value | `input.value` | `Number(input.value)` |
+|---|---|---|
+| `Infinity` | `""` | `0` |
+| `abc` | `""` | `0` |
+| ` 5` (leading space) | `""` | `0` |
+| `1e3` | `"1e3"` | `1000` |
+| `-1` | `"-1"` | `-1` |
+
+In a real browser, `required`, `min="0"` and `step="0.01"` usually stop the form from firing `submit` at all for a blank, negative or three-decimal amount. The tests dispatch `submit` directly, which skips that interactive validation. So does any script that calls the handler. In that path, unparseable input reaches `validateEntry` as `0` and gets the "greater than zero" message (`app.js:787-788`), even though nobody typed zero. `validateEntry` is the gate the code can rely on:
+
+- finite, and between 0 and 999,999,999.99 (line 787)
+- at most two decimals, checked with a tolerance (line 789)
+- non-blank description (line 791)
+- a date-shaped string (line 792) that also survives a round trip through `toISOString()` (lines 793-795), which rejects `2026-02-30`
+
+## 7. Binary floats and money
+
+`0.1 + 0.2 !== 0.3` in JavaScript. This app stores amounts as numbers and relies on `money()` (`app.js:733-739`) to round on display. The two-decimal check uses a tolerance because `8.2 * 100` is `819.9999999999999`; a strict `!==` comparison would reject an ordinary price. Integer cents remove that whole class of problem; 05 Exercise 7 is the migration.
